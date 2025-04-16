@@ -16,7 +16,7 @@ A voice-enabled store assistant that helps customers with store hours, product p
 - Frontend: HTML, JavaScript
 - Backend: Python, FastAPI
 - AI: OpenAI GPT-3.5 Turbo
-- Speech: Web Speech API
+- Speech: Web Speech API/Twilio
 
 ## License
 
