@@ -1,4 +1,4 @@
-# Vapor Store Assistant
+# Vapor Voice Bot
 
 A voice-enabled store assistant that helps customers with store hours, product prices, and inventory inquiries.
 
