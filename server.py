@@ -1,7 +1,9 @@
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, WebSocket, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
+from twilio.twiml.voice_response import VoiceResponse, Gather
+from twilio.rest import Client
 import os
 from dotenv import load_dotenv
 import json
@@ -12,6 +14,12 @@ load_dotenv()
 
 # Initialize OpenAI client with explicit API key
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+
+# Initialize Twilio client
+twilio_client = Client(
+    os.getenv("TWILIO_ACCOUNT_SID"),
+    os.getenv("TWILIO_AUTH_TOKEN")
+)
 
 app = FastAPI()
 
@@ -87,6 +95,136 @@ def check_inventory(product: str) -> str:
         else:
             return f"I'm sorry, but we're currently out of stock for {product}. We expect to have more in next week."
     return f"I'm not sure about the availability of {product}. Let me check with our inventory team."
+
+@app.post("/voice")
+async def voice(request: Request):
+    response = VoiceResponse()
+    
+    # Start with a greeting
+    response.say("Welcome to Vapor! How may I help you today?")
+    
+    # Create a gather to collect speech input
+    gather = Gather(
+        input='speech',
+        action='/handle-speech',
+        method='POST',
+        language='en-US',
+        speechTimeout='auto'
+    )
+    response.append(gather)
+    
+    return Response(content=str(response), media_type="application/xml")
+
+@app.post("/handle-speech")
+async def handle_speech(request: Request):
+    form_data = await request.form()
+    speech_result = form_data.get("SpeechResult", "")
+    
+    # Process the speech with OpenAI
+    response = client.chat.completions.create(
+        model="gpt-3.5-turbo",
+        messages=[
+            {"role": "system", "content": """You are a friendly and helpful store assistant at Vapor. 
+            Your responses should be natural, conversational, and engaging. 
+            Use a warm and welcoming tone, and maintain context throughout the conversation.
+            When answering questions about store hours or prices, be informative but keep it friendly.
+            If you're not sure about something, be honest about it.
+            Feel free to ask follow-up questions to better understand the customer's needs.
+            When asked about product availability, check the inventory status.
+            If a product is out of stock, suggest alternatives or let them know when it might be back in stock."""},
+            {"role": "user", "content": speech_result}
+        ],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_store_hours_multiple",
+                    "description": "Get the store hours for multiple days",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "days": {
+                                "type": "array",
+                                "items": {
+                                    "type": "string"
+                                },
+                                "description": "List of days of the week"
+                            }
+                        },
+                        "required": ["days"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_product_price",
+                    "description": "Get the price of a specific product",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "product": {
+                                "type": "string",
+                                "description": "The name of the product"
+                            }
+                        },
+                        "required": ["product"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "check_inventory",
+                    "description": "Check if a product is in stock",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "product": {
+                                "type": "string",
+                                "description": "The name of the product to check availability for"
+                            }
+                        },
+                        "required": ["product"]
+                    }
+                }
+            }
+        ],
+        tool_choice="auto"
+    )
+    
+    # Create TwiML response
+    twiml_response = VoiceResponse()
+    
+    # Handle function calls
+    if response.choices[0].message.tool_calls:
+        tool_call = response.choices[0].message.tool_calls[0]
+        function_name = tool_call.function.name
+        function_args = json.loads(tool_call.function.arguments)
+        
+        if function_name == "get_store_hours_multiple":
+            result = get_store_hours_multiple(function_args["days"])
+        elif function_name == "get_product_price":
+            result = get_product_price(function_args["product"])
+        elif function_name == "check_inventory":
+            result = check_inventory(function_args["product"])
+    else:
+        result = response.choices[0].message.content
+    
+    # Add the response to TwiML
+    twiml_response.say(result)
+    
+    # Add another gather for the next input
+    gather = Gather(
+        input='speech',
+        action='/handle-speech',
+        method='POST',
+        language='en-US',
+        speechTimeout='auto'
+    )
+    twiml_response.append(gather)
+    
+    return Response(content=str(twiml_response), media_type="application/xml")
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
